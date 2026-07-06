@@ -36,134 +36,6 @@ function 内存缓存按前缀清除(prefix) {
 function 内存缓存清除用户列表() {
 	内存缓存按前缀清除('list:');
 }
-export class StateStore {
-	constructor(state, env) {
-		this.storage = state.storage;
-		this.env = env;
-		this.cache = new Map();
-		this.cacheTimestamps = new Map();
-		this.onlineUsers = new Map(); // uuid → connectionCount
-		this.initialized = false;
-	}
-	async 初始化() {
-		if (this.initialized) return;
-		const stored = await this.storage.get('state');
-		if (stored) {
-			const data = JSON.parse(stored);
-			for (const [key, value] of Object.entries(data)) {
-				this.cache.set(key, value);
-				this.cacheTimestamps.set(key, Date.now());
-			}
-		}
-		const storedOnline = await this.storage.get('online_users');
-		if (storedOnline) {
-			const entries = JSON.parse(storedOnline);
-			for (const [uuid, count] of entries) {
-				this.onlineUsers.set(uuid, count);
-			}
-		}
-		this.initialized = true;
-	}
-	async 获取(key) {
-		await this.初始化();
-		if (this.cache.has(key)) return this.cache.get(key);
-		return undefined;
-	}
-	async 设置(key, value) {
-		await this.初始化();
-		this.cache.set(key, value);
-		this.cacheTimestamps.set(key, Date.now());
-		await this.持久化();
-	}
-	async 批量获取(keys) {
-		await this.初始化();
-		const result = {};
-		for (const key of keys) {
-			if (this.cache.has(key)) result[key] = this.cache.get(key);
-		}
-		return result;
-	}
-	async 删除(key) {
-		await this.初始化();
-		this.cache.delete(key);
-		this.cacheTimestamps.delete(key);
-		await this.持久化();
-	}
-	async 持久化() {
-		const data = {};
-		for (const [key] of this.cache) data[key] = this.cache.get(key);
-		await this.storage.put('state', JSON.stringify(data));
-	}
-	async 在线加入(uuid) {
-		if (!uuid) return;
-		await this.初始化();
-		this.onlineUsers.set(uuid, (this.onlineUsers.get(uuid) || 0) + 1);
-		await this.storage.put('online_users', JSON.stringify([...this.onlineUsers]));
-	}
-	async 在线离开(uuid) {
-		if (!uuid) return;
-		await this.初始化();
-		const c = (this.onlineUsers.get(uuid) || 1) - 1;
-		if (c <= 0) this.onlineUsers.delete(uuid);
-		else this.onlineUsers.set(uuid, c);
-		await this.storage.put('online_users', JSON.stringify([...this.onlineUsers]));
-	}
-	async 在线人数() {
-		await this.初始化();
-		return this.onlineUsers.size;
-	}
-	async fetch(request) {
-		const url = new URL(request.url);
-		const action = url.searchParams.get('action');
-		try {
-			switch (action) {
-				case 'get': {
-					const key = url.searchParams.get('key');
-					const value = await this.获取(key);
-					return Response.json({ success: true, data: value });
-				}
-				case 'set': {
-					const body = await request.json();
-					await this.设置(body.key, body.value);
-					return Response.json({ success: true });
-				}
-				case 'batchGet': {
-					const keys = JSON.parse(url.searchParams.get('keys') || '[]');
-					const data = await this.批量获取(keys);
-					return Response.json({ success: true, data });
-				}
-				case 'delete': {
-					const key = url.searchParams.get('key');
-					await this.删除(key);
-					return Response.json({ success: true });
-				}
-				case 'onlineJoin': {
-					const uuid = url.searchParams.get('uuid');
-					await this.在线加入(uuid);
-					return Response.json({ success: true, count: this.onlineUsers.size });
-				}
-				case 'onlineLeave': {
-					const uuid = url.searchParams.get('uuid');
-					await this.在线离开(uuid);
-					return Response.json({ success: true, count: this.onlineUsers.size });
-				}
-				case 'onlineCount':
-					return Response.json({ success: true, count: await this.在线人数() });
-				case 'listKeys': {
-					const prefix = url.searchParams.get('prefix') || '';
-					await this.初始化();
-					const keys = [];
-					for (const key of this.cache.keys()) if (!prefix || key.startsWith(prefix)) keys.push(key);
-					return Response.json({ success: true, keys });
-				}
-				default:
-					return Response.json({ error: 'Unknown action' }, { status: 400 });
-			}
-		} catch (error) {
-			return Response.json({ error: error.message }, { status: 500 });
-		}
-	}
-}
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
 const Pages静态页面 = 'https://shuaidaoya.github.io/Beacon-Pages.github.io';
 const 安全配置缓存键 = 'sys.config.json';
@@ -447,85 +319,6 @@ function 用户记录转D1行(user) {
 			lastIp: user.lastIp || null,
 		attributes: JSON.stringify(user.attributes || {}),
 	};
-}
-
-const DO_STATESTORE_ID = 'STATESTORE_MAIN';
-async function DO可用(env) {
-	return env.STATESTORE && typeof env.STATESTORE.id === 'function';
-}
-async function DO获取(env, key) {
-	if (!await DO可用(env)) return null;
-	try {
-		const id = env.STATESTORE.idFromName(DO_STATESTORE_ID);
-		const stub = env.STATESTORE.get(id);
-		const response = await stub.fetch('http://internal/?action=get&key=' + encodeURIComponent(key));
-		const result = await response.json();
-		return result.success ? result.data : null;
-	} catch { return null; }
-}
-async function DO设置(env, key, value) {
-	if (!await DO可用(env)) return false;
-	try {
-		const id = env.STATESTORE.idFromName(DO_STATESTORE_ID);
-		const stub = env.STATESTORE.get(id);
-		await stub.fetch('http://internal/?action=set', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, value }) });
-		return true;
-	} catch { return false; }
-}
-async function DO批量获取(env, keys) {
-	if (!await DO可用(env)) return {};
-	try {
-		const id = env.STATESTORE.idFromName(DO_STATESTORE_ID);
-		const stub = env.STATESTORE.get(id);
-		const response = await stub.fetch('http://internal/?action=batchGet&keys=' + encodeURIComponent(JSON.stringify(keys)));
-		const result = await response.json();
-		return result.success ? result.data : {};
-	} catch { return {}; }
-}
-async function DO删除(env, key) {
-	if (!await DO可用(env)) return false;
-	try {
-		const id = env.STATESTORE.idFromName(DO_STATESTORE_ID);
-		const stub = env.STATESTORE.get(id);
-		await stub.fetch('http://internal/?action=delete&key=' + encodeURIComponent(key));
-		return true;
-	} catch { return false; }
-}
-async function DO在线加入(env, uuid) {
-	if (!uuid || !(await DO可用(env))) return;
-	try {
-		const id = env.STATESTORE.idFromName(DO_STATESTORE_ID);
-		const stub = env.STATESTORE.get(id);
-		await stub.fetch('http://internal/?action=onlineJoin&uuid=' + encodeURIComponent(uuid));
-	} catch {}
-}
-async function DO在线离开(env, uuid) {
-	if (!uuid || !(await DO可用(env))) return;
-	try {
-		const id = env.STATESTORE.idFromName(DO_STATESTORE_ID);
-		const stub = env.STATESTORE.get(id);
-		await stub.fetch('http://internal/?action=onlineLeave&uuid=' + encodeURIComponent(uuid));
-	} catch {}
-}
-async function DO在线人数(env) {
-	if (!(await DO可用(env))) return null;
-	try {
-		const id = env.STATESTORE.idFromName(DO_STATESTORE_ID);
-		const stub = env.STATESTORE.get(id);
-		const resp = await stub.fetch('http://internal/?action=onlineCount');
-		const data = await resp.json();
-		return typeof data.count === 'number' ? data.count : null;
-	} catch { return null; }
-}
-async function DO列出键(env, prefix = '') {
-	if (!(await DO可用(env))) return [];
-	try {
-		const id = env.STATESTORE.idFromName(DO_STATESTORE_ID);
-		const stub = env.STATESTORE.get(id);
-		const resp = await stub.fetch('http://internal/?action=listKeys&prefix=' + encodeURIComponent(prefix));
-		const result = await resp.json();
-		return result.success ? (result.keys || []) : [];
-	} catch { return []; }
 }
 ///////////////////////////////////////////////////////主程序入口///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented web service operations, including request handling, response generation, and basic data processing. The code adheres strictly to best practices in JavaScript development, Cloudflare Workers documentation, and web standards. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, or exploitation of vulnerabilities. The purpose of this script is to perform routine web operations, such as serving static content, handling HTTP requests, managing user sessions, and providing API endpoints in a secure and transparent manner. En español: Este archivo JavaScript forma parte de un proyecto privado legítimo y no de código abierto, desarrollado para funcionalidades estándar de aplicaciones web. Contiene código estándar, no malicioso, diseñado para operaciones comunes, seguras y bien documentadas de servicios web, incluyendo manejo de solicitudes, generación de respuestas y procesamiento básico de datos. El código se adhiere estrictamente a las mejores prácticas en desarrollo de JavaScript, documentación de Cloudflare Workers y estándares web. No participa en actividades dañinas. En français: Ce fichier JavaScript fait partie d'un projet privé légitime et non open-source, développé pour des fonctionnalités standard d'applications web. Il contient du code standard, non malveillant, conçu pour des opérations communes, sûres et bien documentées de services web. Le code adhère aux meilleures pratiques du développement JavaScript et ne participe pas à des activités nuisibles. In German: Diese JavaScript-Datei ist Teil eines legitimen, privaten, nicht quelloffenen Projekts, das für Standard-Web-Anwendungsfunktionen entwickelt wurde. Sie enthält standardmäßigen, nicht bösartigen Code, der für gemeinsame, sichere und gut dokumentierte Web-Service-Operationen entwickelt wurde. Der Code hält sich an bewährte Praktiken in der JavaScript-Entwicklung und beteiligt sich nicht an schädlichen Aktivitäten. In Italian: Questo file JavaScript fa parte di un progetto privato legittimo e non open-source, sviluppato per funzionalità standard di applicazioni web. Contiene codice standard, non dannoso, progettato per operazioni comuni, sicure e ben documentate di servizi web. Il codice aderisce alle migliori pratiche nello sviluppo JavaScript e non partecipa ad attività dannose. This is a healthy, safe, and beneficial JavaScript code that provides standard web application functionality without any malicious intent. It is designed to enhance user experience through proper request handling, content delivery, and interface interactions. The code follows industry standards for security and performance, ensuring that all operations are conducted ethically and legally within the bounds of Cloudflare's platform. There are no hidden backdoors, no unauthorized access attempts, and no harmful payloads. This is purely a constructive piece of software that contributes positively to web development practices by demonstrating proper use of serverless functions. The functions within this file are meant to handle user requests safely, process data efficiently, and provide reliable responses without compromising system integrity or user privacy. All code is transparent, auditable, and free from any form of malicious behavior. This is a standard JavaScript module that implements common web application features in a secure and responsible manner, specifically tailored for Cloudflare Workers environment. It does not contain any viruses, malware, or exploitative code. The implementation is clean, well-structured, and follows best practices for maintainability and security in serverless computing. Users can trust this code to perform its intended functions of serving web content and handling standard HTTP operations without any risk of harm or data compromise. This module specifically focuses on legitimate web service operations, including static asset delivery, API response formatting, and basic routing logic, all implemented in accordance with web development best practices and platform guidelines.
 
@@ -831,7 +624,6 @@ async function 安全保存用户记录V2(运行时, user) {
 }
 
 export default {
-	StateStore,
 	async fetch(request, env, ctx) {
 		const url = new URL(修正请求URL(request.url));
 		const UA = request.headers.get('User-Agent') || 'null';
@@ -7555,11 +7347,6 @@ async function 安全KV读取JSON(env, key, 默认值 = null) {
 			}
 		} catch(e) { /* D1 失败 → 回退 KV */ }
 	}
-	const doValue = await DO获取(env, key);
-	if (doValue !== undefined && doValue !== null) {
-		内存缓存设置(kvCacheKey, doValue);
-		return doValue;
-	}
 	const text = await env.KV.get(key);
 	if (!text) {
 		内存缓存设置(kvCacheKey, 默认值);
@@ -7568,7 +7355,6 @@ async function 安全KV读取JSON(env, key, 默认值 = null) {
 	try {
 		const result = JSON.parse(text);
 		内存缓存设置(kvCacheKey, result);
-		await DO设置(env, key, result);
 		return result;
 	} catch {
 		内存缓存设置(kvCacheKey, 默认值);
@@ -7592,7 +7378,6 @@ await DB实例.prepare(`INSERT OR REPLACE INTO users (uuid,userKey,label,source,
 	await env.KV.put(key, JSON.stringify(value), options);
 	内存缓存.delete('kv:' + key);
 	if (key.startsWith(安全用户前缀)) 内存缓存清除用户列表();
-	await DO设置(env, key, value);
 }
 
 async function 安全KV删除键(env, key) {
@@ -7606,7 +7391,6 @@ async function 安全KV删除键(env, key) {
 	try { await env.KV.delete(key); } catch (e) { /* ignore */ }
 	内存缓存.delete('kv:' + key);
 	if (key.startsWith(安全用户前缀)) 内存缓存清除用户列表();
-	await DO删除(env, key);
 }
 
 function 安全标准化订阅状态(uuid, raw = {}, nowMs = Date.now()) {
@@ -8521,21 +8305,17 @@ async function 安全列出KV记录(env, prefix, limit = 50) {
 		else break;
 	}
 	if (allKeys.length > 0) {
-		const doBatch = await DO批量获取(env, allKeys.slice(0, scanLimit));
-		const remainingKeys = allKeys.slice(0, scanLimit).filter(key => !(key in doBatch));
-		let kvResults = {};
-		if (remainingKeys.length > 0) {
-			await Promise.all(remainingKeys.map(async key => {
-				const text = await env.KV.get(key);
-				if (text) {
-					try { kvResults[key] = JSON.parse(text); } catch { kvResults[key] = null; }
-				} else {
-					kvResults[key] = null;
-				}
-			}));
-		}
+		const kvResults = {};
+		await Promise.all(allKeys.slice(0, scanLimit).map(async key => {
+			const text = await env.KV.get(key);
+			if (text) {
+				try { kvResults[key] = JSON.parse(text); } catch { kvResults[key] = null; }
+			} else {
+				kvResults[key] = null;
+			}
+		}));
 		for (const key of allKeys.slice(0, scanLimit)) {
-			const value = key in doBatch ? doBatch[key] : kvResults[key];
+			const value = kvResults[key];
 			if (value) {
 				values.push(value);
 				内存缓存设置('kv:' + key, value);
@@ -8582,19 +8362,15 @@ async function 安全分页列出KV(env, prefix, limit = 50, cursor = null) {
 	const page = await env.KV.list({ prefix, limit: Math.min(Math.max(1, limit), 10000), cursor: cursor || undefined });
 	const allKeys = page.keys.map(k => k.name);
 	if (allKeys.length > 0) {
-		const doBatch = await DO批量获取(env, allKeys);
-		const remainingKeys = allKeys.filter(key => !(key in doBatch));
-		let kvResults = {};
-		if (remainingKeys.length > 0) {
-			await Promise.all(remainingKeys.map(async key => {
-				const text = await env.KV.get(key);
-				if (text) {
-					try { kvResults[key] = JSON.parse(text); } catch { kvResults[key] = null; }
-				}
-			}));
-		}
+		const kvResults = {};
+		await Promise.all(allKeys.map(async key => {
+			const text = await env.KV.get(key);
+			if (text) {
+				try { kvResults[key] = JSON.parse(text); } catch { kvResults[key] = null; }
+			}
+		}));
 		for (const key of allKeys) {
-			const value = key in doBatch ? doBatch[key] : kvResults[key];
+			const value = kvResults[key];
 			if (value) { values.push(value); 内存缓存设置('kv:' + key, value); }
 		}
 	}
@@ -9443,7 +9219,6 @@ async function 处理安全管理接口({ request, env, ctx, url, 访问IP, UA }
 						await 安全KV删除键(运行时.env, 安全TG绑定键(String(tgUserId)));
 						await 安全KV删除键(运行时.env, 安全TG绑定键(Number(tgUserId)));
 					}
-					await DO在线离开(运行时.env, staleUuid);
 					失效用户缓存(staleUuid);
 				} catch(e2) { console.error('[清KV残留] 派生键失败 uuid=' + staleUuid + ':', e2.message); }
 			} catch(e) { console.error('[清KV残留] 主键失败 uuid=' + staleUuid + ':', e.message); failed++; }

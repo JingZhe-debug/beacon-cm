@@ -35,8 +35,7 @@
 3. 绑定 **KV** 命名空间（变量名 `KV`）
 4. 绑定 **D1** 数据库（变量名 `DB`，数据库名 `beacon-users`）
 5. 执行 `schema.sql` 初始化表结构
-6. （可选）绑定 **Durable Objects**（变量名 `STATESTORE`）提升大规模场景性能
-7. 绑定自定义域名，访问 `/admin` 登录
+6. 绑定自定义域名，访问 `/admin` 登录
 
 ### Pages + GitHub 部署（推荐）
 
