@@ -9,6 +9,7 @@ pattern = "beacon.jingzhevpn.de5.net/*"
 zone_name = "jingzhevpn.de5.net"
 
 [vars]
+# 强烈建议换一个复杂密码，你之前那个 809341047Yang 已经泄露了
 ADMIN = "jingzhenb666"
 
 [[kv_namespaces]]
@@ -17,8 +18,9 @@ id = "19cdddfd5dd4465993cd6e8bbef1713f"
 
 [[d1_databases]]
 binding = "DB"
+# 这里必须写你 Cloudflare 里实际的数据库名（你之前截图显示是 jingzhe）
 database_name = "jingzhe"
 database_id = "f1b1fba9-1b02-42c5-96a2-004a89e1eaee"
 
-[[triggers]]
+[triggers]
 crons = ["0 */6 * * *"]
