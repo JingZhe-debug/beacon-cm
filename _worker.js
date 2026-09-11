@@ -275,7 +275,6 @@ async function 确保D1用户表() {
 				'deviceFp TEXT DEFAULT NULL',
 				'lastIp TEXT DEFAULT NULL',
 		]) {
-			try { await DB实例.prepare('ALTER TABLE users ADD COLUMN '+col).run(); } catch(e) { /* 列已存在 */ }
 		}
 		await DB实例.prepare(`CREATE INDEX IF NOT EXISTS idx_users_userKey ON users(userKey)`).run();
 		await DB实例.prepare(`CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)`).run();
