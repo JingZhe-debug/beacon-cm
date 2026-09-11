@@ -1,23 +1,24 @@
 name = "beacon-cm"
 main = "_worker.js"
-compatibility_date = "2025-11-04"
+compatibility_date = "2024-11-04"
+compatibility_flags = ["nodejs_compat"]
 keep_vars = true
 
 [[routes]]
-pattern = "beacon.ssdxz.cc.cd/*"
-zone_name = "ssdxz.cc.cd"
+pattern = "beacon.jingzhevpn.de5.net/*"
+zone_name = "jingzhevpn.de5.net"
 
 [vars]
-ADMIN = "809341047Yang"
+ADMIN = "jingzhenb666"
 
 [[kv_namespaces]]
 binding = "KV"
-id = "08e0acf157184a189c5e1a14335603a5"				
+id = "19cdddfd5dd4465993cd6e8bbef1713f"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "beacon-tunnel-db"
-database_id = "c17b4997-81f9-458b-bc7d-07369726f5eb"
+database_name = "jingzhe"
+database_id = "f1b1fba9-1b02-42c5-96a2-004a89e1eaee"
 
-[triggers]
+[[triggers]]
 crons = ["0 */6 * * *"]
