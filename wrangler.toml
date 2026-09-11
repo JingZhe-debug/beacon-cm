@@ -1,26 +1,31 @@
 name = "beacon-cm"
 main = "_worker.js"
-compatibility_date = "2024-11-04"
+compatibility_date = "2025-11-04"
+# 【必加】解决 node:crypto 警告，不加会白屏
 compatibility_flags = ["nodejs_compat"]
 keep_vars = true
 
 [[routes]]
+# 【改好了】换成你自己的域名
 pattern = "beacon.jingzhevpn.de5.net/*"
 zone_name = "jingzhevpn.de5.net"
 
 [vars]
-# 强烈建议换一个复杂密码，你之前那个 809341047Yang 已经泄露了
+# 【警告】强烈建议改成你新想的密码，这个已经泄露了
 ADMIN = "jingzhenb666"
 
 [[kv_namespaces]]
 binding = "KV"
+# 【改好了】换成你提供的 KV ID
 id = "19cdddfd5dd4465993cd6e8bbef1713f"
 
 [[d1_databases]]
 binding = "DB"
-# 这里必须写你 Cloudflare 里实际的数据库名（你之前截图显示是 jingzhe）
+# 【改好了】改成你的数据库名字（jingzhe）
 database_name = "jingzhe"
+# 【改好了】换成你提供的 D1 ID
 database_id = "f1b1fba9-1b02-42c5-96a2-004a89e1eaee"
 
+# 【重要修正】triggers 必须用单方括号 [triggers]，不能用 [[triggers]]，否则会报错
 [triggers]
 crons = ["0 */6 * * *"]
