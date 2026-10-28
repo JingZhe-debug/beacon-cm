@@ -17,7 +17,7 @@ ADMIN = "jingzhenb666"
 [[kv_namespaces]]
 binding = "KV"
 # 【改好了】换成你提供的 KV ID
-id = "19cdddfd5dd4465993cd6e8bbef1713f"
+id = "9276f6bb63a1491b9fe492e799c3e770"
 
 [[d1_databases]]
 binding = "DB"
