@@ -5,19 +5,14 @@ compatibility_date = "2025-11-04"
 compatibility_flags = ["nodejs_compat"]
 keep_vars = true
 
-[[routes]]
-# 【改好了】换成你自己的域名
-pattern = "beacon.jingzhevpn.de5.net/*"
-zone_name = "jingzhevpn.de5.net"
-
 [vars]
 # 【警告】强烈建议改成你新想的密码，这个已经泄露了
-ADMIN = "jingzhenb666"
+ADMIN = "548766"
 
 [[kv_namespaces]]
 binding = "KV"
 # 【改好了】换成你提供的 KV ID
-id = "9276f6bb63a1491b9fe492e799c3e770"
+id = "5aa3cb6bf8f740e4828c93db9a2f42b0"
 
 [[d1_databases]]
 binding = "DB"
