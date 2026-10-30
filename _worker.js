@@ -59,13 +59,28 @@ let DB实例 = null;
 function 初始化D1(env) { if (env.DB && typeof env.DB.prepare === 'function') DB实例 = env.DB; }
 
 // ===== 全局流量统计 (D1/KV 持久化，对齐用户流量方式) =====
-// 在线心跳已关闭：不再写入 online_heartbeat，不再维护在线时间戳
-function 用户心跳(uuid) { return; }
-async function 刷写心跳(uuid) { return; }
-async function 读取在线人数() { return 0; }
+// 心跳机制：每个连接定期写入时间戳，统计最近35秒内有心跳的UUID数（跨全球节点统一）
+const 活跃心跳Map = new Map();
+function 用户心跳(uuid) { if (!uuid) return; 活跃心跳Map.set(uuid, Date.now()); 刷写心跳(uuid).catch(()=>{}); }
+async function 刷写心跳(uuid) {
+	if (!uuid) return;
+	const now = Date.now();
+	// 已禁用：online_heartbeat D1写入
+	// if (DB实例) try { await DB实例.prepare('INSERT OR REPLACE INTO online_heartbeat (uuid, last_beat) VALUES (?, ?)').bind(uuid, now).run(); } catch(e) { try { await DB实例.prepare('CREATE TABLE IF NOT EXISTS online_heartbeat (uuid TEXT PRIMARY KEY, last_beat INTEGER)').run(); } catch(e2) {} }
+	// 已关闭：KV在线心跳写入 sys:online
+}
+async function 读取在线人数() {
+	let count = 0;
+	const cutoff = Date.now() - 35000;
+	if (DB实例) { try { const r = await DB实例.prepare('SELECT COUNT(*) as cnt FROM online_heartbeat WHERE last_beat > ?').bind(cutoff).first(); if (r) count = r.cnt || 0; } catch(e) {} }
+	if (count === 0) { try { const list = await env_global?.KV?.list({ prefix: 'sys:online:' }); if (list) count = list.keys.length; } catch(e) {} }
+	for (const [k, v] of 活跃心跳Map) { if (v < cutoff) 活跃心跳Map.delete(k); }
+	if (count === 0) count = 活跃心跳Map.size;
+	return count;
+}
 function 格式化字节(b) { if (!b || b <= 0) return '0 B'; const k = 1024, u = ['B', 'KB', 'MB', 'GB', 'TB']; const i = Math.floor(Math.log(b) / Math.log(k)); return parseFloat((b / Math.pow(k, i)).toFixed(1)) + ' ' + u[i]; }
 async function 同步在线人数() {
-	// KV disabled: sys:global:active removed
+	// 已关闭：KV全局在线统计写入 sys:global:active
 }
 // 全站流量统计：D1 单一权威，避免 KV read-modify-write 竞态。
 async function 读取全局流量() {
@@ -112,59 +127,36 @@ async function 增加用户已用流量(uuid, bytes, options = {}) {
 	const normalizedUUID = String(uuid || '').toLowerCase();
 	const 增量字节 = Number(bytes || 0);
 	if (!安全UUID有效(normalizedUUID) || !Number.isFinite(增量字节) || 增量字节 <= 0) return false;
-	let wrote = false;
-	if (DB实例) {
-		try {
-			await DB实例.prepare('UPDATE users SET used_traffic=used_traffic+? WHERE uuid=?').bind(增量字节, normalizedUUID).run();
-			wrote = true;
-		} catch (e) { /* D1 失败时继续尝试 KV 同步 */ }
-	}
-	if (options.syncKV !== false && env_global?.KV) {
-		try {
-			const key = 安全用户前缀 + normalizedUUID;
-			const text = await env_global.KV.get(key);
-			if (text) {
-				const user = JSON.parse(text);
-				user.used_traffic = (user.used_traffic || 0) + 增量字节;
-				// KV disabled: user record now stored in D1 only
-			}
-		} catch (e) { /* ignore KV sync failure */ }
-	}
-	失效用户缓存(normalizedUUID);
-	return wrote;
+	// 改为进入流量缓存池，由批量刷写统一写入D1，避免每次请求UPDATE。
+	批量累加流量(normalizedUUID, 增量字节);
+	return true;
+
 }
 
-// ===== 批量流量累加 (600s flush, beacon-tunnel 对齐) =====
+// ===== 批量流量累加 (60s flush, beacon-tunnel 对齐) =====
 const 流量累加池 = new Map();
+const 用户流量最后活动 = new Map();
 let 上次流量刷写时间 = 0, 流量刷写失败次数 = 0;
 function 批量累加流量(uuid, bytes) {
 	if (!bytes || bytes <= 0 || !uuid) return;
 	流量累加池.set(uuid, (流量累加池.get(uuid) || 0) + bytes);
+	用户流量最后活动.set(uuid, Date.now());
 }
 async function 批量刷写流量() {
 	const hasUser = 流量累加池.size > 0;
 	const hasGlobal = (全站累加池.up > 0 || 全站累加池.down > 0 || 全站累加池.dayUp > 0 || 全站累加池.dayDown > 0);
 	if (!hasUser && !hasGlobal) return;
 	const now = Date.now();
-	if (now - 上次流量刷写时间 < 600000 && 流量累加池.size < 50) return;
+	if (now - 上次流量刷写时间 < 3600000 && 流量累加池.size < 100) return;
 	上次流量刷写时间 = now;
 	const entries = [...流量累加池.entries()];
 	流量累加池.clear();
 	for (const [u] of entries) 失效用户缓存(u);
 	if (DB实例 && entries.length) {
 		try {
-			// 将多个用户流量 UPDATE 合并为一次 D1 写入，降低 D1 write 消耗
-			let caseSql = '';
-			let uuidSql = [];
-			let params = [];
-			for (const [u, b] of entries) {
-				caseSql += ' WHEN ? THEN used_traffic + ?';
-				uuidSql.push('?');
-				params.push(u, b);
-			}
-			const sql = `UPDATE users SET used_traffic = CASE uuid ${caseSql} END WHERE uuid IN (${uuidSql.join(',')})`;
-			params.push(...entries.map(([u]) => u));
-			await DB实例.prepare(sql).bind(...params).run();
+			await DB实例.batch(entries.map(([u, b]) =>
+				DB实例.prepare('UPDATE users SET used_traffic=used_traffic+? WHERE uuid=?').bind(b, u)
+			));
 			流量刷写失败次数 = 0;
 		} catch(e) {
 			流量刷写失败次数++;
@@ -185,7 +177,7 @@ async function 批量刷写流量() {
 				try {
 					const user = JSON.parse(text);
 					user.used_traffic = (user.used_traffic || 0) + b;
-					// KV disabled: user record now stored in D1 only
+// 已关闭KV写入: 					await env_global.KV.put(key, JSON.stringify(user));
 				} catch {}
 			}
 		}
@@ -531,7 +523,7 @@ async function 安全记录登录失败(运行时, ip) {
 			}
 		}
 		const ttl = 15 * 60;
-		// KV disabled: login failure limiter KV removed
+// 已关闭KV写入: // 已关闭KV写入: 		await 运行时.env.KV.put(key, JSON.stringify({ failures, firstAt }), { expirationTtl: ttl });
 	} catch(e) {}
 }
 
@@ -859,66 +851,6 @@ export default {
 				if (labelValue && /@/.test(labelValue) && !校验结果.email) {
 					校验结果.email = labelValue;
 				}
-				// ── TG验证强制校验：当verifyRequired为true时，要求TG验证后才能完成注册 ──
-				const tgVerifyRequired = 当前安全配置.tgSecurityNotifications?.verifyRequired === true;
-				if (tgVerifyRequired) {
-					// 检查TG Bot配置
-					const TG_TXT2 = await env.KV.get('tg.json');
-					if (!TG_TXT2) return 认证JSON响应('AUTH_TG_NOT_CONFIGURED', 'TG验证服务未配置，请联系管理员。', null, 503);
-					const TG2 = JSON.parse(TG_TXT2);
-					if (!TG2.BotToken || !(TG2.VerifyGroupID || TG2.ChatID)) {
-						return 认证JSON响应('AUTH_TG_NOT_CONFIGURED', 'TG验证服务未配置完整（缺少BotToken或群组ID），请联系管理员。', null, 503);
-					}
-					// 生成TG验证码
-					const 验证码超时 = 安全数值(当前安全配置.tgSecurityNotifications?.verifyTimeout, 600, 60, 3600);
-					const verifyResult = await 安全生成TG验证码(运行时, 验证码超时);
-					if (!verifyResult || !verifyResult.code) {
-						return 认证JSON响应('AUTH_TG_CODE_FAILED', '验证码生成失败，请稍后重试。', null, 500);
-					}
-					// 存储待注册数据
-					const pendingData = {
-						account: labelValue,
-						email: 校验结果.email || '',
-						passwordHash: hash,
-						createdAt: Date.now(),
-						expiresAt: verifyResult.expiresAt,
-						ip: 访问IP,
-						ua: UA,
-					};
-					const verifyKey = 安全TG验证键(verifyResult.code);
-					const existingVerify = await 安全KV读取JSON(运行时.env, verifyKey, null);
-					if (existingVerify) {
-						existingVerify.pendingRegistration = pendingData;
-                        // TG验证码状态保存已关闭，不写入KV
-                        // // TG验证码状态保存已关闭，不写入KV
-						// await 安全KV写入JSON(运行时.env, verifyKey, existingVerify, Math.ceil((existingVerify.expiresAt - Date.now()) / 1000));
-					}
-					await 安全记录注册日志(运行时, 'tg_verify_pending', null, 访问IP, UA, { account: 校验结果.account, code: 安全掩码UUID(verifyResult.code) }, 安全当前时间(env));
-					let botUsername = TG2.BotUsername || null;
-					if (!botUsername) {
-						try { const meR = await fetch('https://api.telegram.org/bot' + TG2.BotToken + '/getMe'); const meD = await meR.json(); if (meD.ok && meD.result?.username) botUsername = meD.result.username; } catch(e) {}
-					}
-					if (!botUsername) botUsername = 'unknown_bot';
-					// 获取群组邀请链接
-					const verifyGroupId2 = TG2.VerifyGroupID || TG2.ChatID;
-					let groupInviteLink = TG2.GroupInviteLink || '';
-					if (!groupInviteLink && verifyGroupId2) {
-						try {
-							const chatInfo = await 安全调用TG_API(TG2.BotToken, 'getChat', { chat_id: verifyGroupId2 });
-							if (chatInfo.ok && chatInfo.result?.invite_link) {
-								groupInviteLink = chatInfo.result.invite_link;
-							}
-						} catch(e) {}
-					}
-					return 认证JSON响应('AUTH_TG_VERIFY_REQUIRED', '请通过Telegram验证以完成注册。', {
-						code: verifyResult.code,
-						expiresAt: verifyResult.expiresAt,
-						timeout: verifyResult.timeout,
-						botUsername,
-						groupInviteLink,
-						account: labelValue,
-					}, 202);
-				}
 				const newUserPayload = {
 					...payload,
 					label: labelValue,
@@ -1026,8 +958,7 @@ export default {
 				const existingVerify = await 安全KV读取JSON(运行时.env, verifyKey, null);
 				if (existingVerify) {
 					existingVerify.pendingRegistration = pendingData;
-					// TG验证码状态保存已关闭，不写入KV
-						// await 安全KV写入JSON(运行时.env, verifyKey, existingVerify, Math.ceil((existingVerify.expiresAt - Date.now()) / 1000));
+					await 安全KV写入JSON(运行时.env, verifyKey, existingVerify, Math.ceil((existingVerify.expiresAt - Date.now()) / 1000));
 				}
 				await 安全记录注册日志(运行时, 'tg_verify_pending', null, 访问IP, UA, { account: 校验结果.account, code: 安全掩码UUID(verifyResult.code) }, 安全当前时间(env));
 				// 获取Bot用户名用于前端展示（优先tg.json配置，否则调用getMe API）
@@ -1174,10 +1105,8 @@ export default {
 							boundAt: Date.now(),
 						});
 						// 三步全部成功 → 清理验证记录（KV + D1）
-						// TG验证码删除已关闭
-						// try { await 运行时.env.KV.delete(安全TG验证键(code)); } catch(e) {}
-						// TG验证码D1删除已关闭
-						// try { if (DB实例) await DB实例.prepare('DELETE FROM tg_verify WHERE code = ?').bind(code.toUpperCase()).run(); } catch(e) {}
+						try { await 运行时.env.KV.delete(安全TG验证键(code)); } catch(e) {}
+						try { if (DB实例) await DB实例.prepare('DELETE FROM tg_verify WHERE code = ?').bind(code.toUpperCase()).run(); } catch(e) {}
 					} catch(e) {
 						console.error('[注册] TG绑定写入失败 uuid=' + user.uuid + ':', e.message, '（用户已创建但无 tgUserId，验证码保留，前端重试后可补写）');
 						return 认证JSON响应('AUTH_TG_BIND_SAVE_FAILED', 'TG账号验证成功但绑定数据写入失败，请稍后重试。', {
@@ -1290,13 +1219,7 @@ if (访问路径 === 'register/login' || 访问路径 === 'register/login/') {
 				let migrationToken = null;
 				if (!user.passwordSet) {
 					migrationToken = 安全生成迁移令牌();
-					try {
-						// KV disabled: sys:migration removed
-/* await 运行时.env.KV.put('sys:migration:' + migrationToken, JSON.stringify({
-							uuid: user.uuid,
-							account: 校验结果.account,
-						}), { expirationTtl: 900 }); */ // KV disabled
-					} catch(e) {}
+					// 已关闭：账号迁移 Token KV 写入
 				}
 				const profile = 安全提取用户展示信息V2(user);
 				const responseData = {
@@ -1915,7 +1838,7 @@ if (访问路径 === 'register/user' || 访问路径 === 'register/user/') {
 								}
 
 								// 保存到 KV
-								// KV disabled: cf.json 写入关闭，仅保留读取兼容。
+// 已关闭KV写入: // 已关闭KV写入: 								await env.KV.put('cf.json', JSON.stringify(CF_JSON, null, 2));
 								ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Save_Config', config_JSON));
 								return new Response(JSON.stringify({ success: true, message: '配置已保存' }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 							} catch (error) {
@@ -1927,7 +1850,7 @@ if (访问路径 === 'register/user' || 访问路径 === 'register/user/') {
 								const newConfig = await request.json();
 								if (newConfig.init && newConfig.init === true) {
 									const TG_JSON = { BotToken: null, ChatID: null };
-									// KV disabled: tg.json 写入关闭。
+// 已关闭KV写入: // 已关闭KV写入: 									await env.KV.put('tg.json', JSON.stringify(TG_JSON, null, 2));
 									if (安全运行时) {
 										const 当前配置 = await 读取安全配置(env, 安全运行时);
 										await 保存安全配置(env, 安全运行时, 安全深合并(当前配置, { tgSecurityNotifications: { enabled: false } }));
@@ -1940,7 +1863,7 @@ if (访问路径 === 'register/user' || 访问路径 === 'register/user/') {
 									try { const t = await env.KV.get('tg.json'); if (t) existing = JSON.parse(t) || {}; } catch(e) {}
 									const merged = Object.assign({}, existing, newConfig);
 									if (!newConfig.BotToken) delete merged.BotToken;
-									// KV disabled: tg.json 写入关闭。
+// 已关闭KV写入: // 已关闭KV写入: 									await env.KV.put('tg.json', JSON.stringify(merged, null, 2));
 									if (安全运行时) {
 										const 当前配置 = await 读取安全配置(env, 安全运行时);
 										await 保存安全配置(env, 安全运行时, 安全深合并(当前配置, { tgSecurityNotifications: { enabled: true } }));
@@ -3556,7 +3479,7 @@ async function WebSocket发送并等待(webSocket, payload) {
 async function connectStreams(remoteSocket, webSocket, headerData, retryFunc, userUUID = null) {
 	let header = headerData, hasData = false, reader, useBYOB = false;
 	let 连接累计字节 = 0; // per-connection total (beacon-tunnel 对齐)
-	const 心跳定时器 = userUUID ? setInterval(() => 用户心跳(userUUID), 10000) : null;
+	// const 心跳定时器 = userUUID ? setInterval(() => 用户心跳(userUUID), 10000) : null;
 	const BYOB缓冲区大小 = 512 * 1024, BYOB单次读取上限 = 64 * 1024, BYOB高吞吐阈值 = 50 * 1024 * 1024;
 	const BYOB慢速刷新间隔 = 20, BYOB快速刷新间隔 = 2, BYOB安全阈值 = BYOB缓冲区大小 - BYOB单次读取上限;
 
@@ -4257,7 +4180,7 @@ async function 请求日志记录(env, request, 访问IP, 请求类型 = "Get_SU
 				}
 			} catch (e) { 日志数组 = [日志内容] }
 		} else { 日志数组 = [日志内容] }
-		// KV disabled: request/event logs no longer written to KV
+// 已关闭KV写入: // 已关闭KV写入: 		await env.KV.put('log.json', JSON.stringify(日志数组, null, 2));
 	} catch (error) { console.error(`日志记录失败: ${error.message}`) }
 }
 
@@ -4550,7 +4473,7 @@ async function 安全处理TG命令(env, 运行时, 消息文本, chatId, tgFrom
 		const uuid = arg.trim().toLowerCase();
 		if (!安全UUID有效(uuid)) return '⚠️ 请提供有效的 UUID。\n用法：<code>/bcpurge 197a594c-6bb9-4b62-a6fc-56e4cd656f0b</code>';
 		// 先写KV墓碑标记（D1过载也能生效）
-		try { /* KV disabled: sys:deleted removed */ } catch(e) {}
+// 已关闭KV写入: // 已关闭KV写入: 		try { await 运行时.env.KV.put('sys:deleted:' + uuid, JSON.stringify({ deletedAt: Date.now() })); } catch(e) { return '⚠️ 墓碑写入失败：' + (e?.message || '未知错误'); }
 		// 尝试清理D1
 		if (DB实例) {
 			try { await DB实例.prepare('DELETE FROM users WHERE uuid=?').bind(uuid).run(); } catch(e) { /* D1过载静默 */ }
@@ -5097,7 +5020,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	try {
 		const TG_TXT = await env.KV.get('tg.json');
 		if (!TG_TXT) {
-			// KV disabled: tg.json 初始化写入关闭。
+// 已关闭KV写入: // 已关闭KV写入: 			await env.KV.put('tg.json', JSON.stringify(初始化TG_JSON, null, 2));
 		} else {
 			const TG_JSON = JSON.parse(TG_TXT);
 			config_JSON.TG.ChatID = TG_JSON.ChatID ? TG_JSON.ChatID : null;
@@ -5114,7 +5037,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	try {
 		const CF_TXT = await env.KV.get('cf.json');
 		if (!CF_TXT) {
-			// KV disabled: cf.json 初始化写入关闭。
+// 已关闭KV写入: // 已关闭KV写入: 			await env.KV.put('cf.json', JSON.stringify(初始化CF_JSON, null, 2));
 		} else {
 			const CF_JSON = JSON.parse(CF_TXT);
 			if (CF_JSON.UsageAPI) {
@@ -6953,8 +6876,8 @@ async function 安全D1写入验证状态(code, record) {
 	if (!DB实例 || !code || !record) { console.warn('[TG验证] D1写入跳过: DB实例=' + !!DB实例 + ' code=' + code); return; }
 	try {
 		await DB实例.prepare('CREATE TABLE IF NOT EXISTS tg_verify (code TEXT PRIMARY KEY, status TEXT, data TEXT, expires_at INTEGER, updated_at INTEGER)').run();
-		await DB实例.prepare('INSERT OR REPLACE INTO tg_verify (code, status, data, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-			.bind(code.toUpperCase(), record.status || '', JSON.stringify(record), 安全数值(record.expiresAt, 0, 0), Date.now()).run();
+		// 已禁用：tg_verify D1写入
+		// await DB实例.prepare('INSERT OR REPLACE INTO tg_verify (code, status, data, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)').bind(code.toUpperCase(), record.status || '', JSON.stringify(record), 安全数值(record.expiresAt, 0, 0), Date.now()).run();
 		console.log('[TG验证] D1写入成功 code=' + code + ' status=' + record.status);
 	} catch(e) { console.warn('[TG验证] D1写入验证状态失败 code=' + code + ': ' + (e?.message || e)); }
 }
@@ -7376,21 +7299,7 @@ await DB实例.prepare(`INSERT OR REPLACE INTO users (uuid,userKey,label,source,
 	}
 	const options = {};
 	if (Number.isFinite(expirationTtl) && expirationTtl > 0) options.expirationTtl = expirationTtl;
-
-	// KV FINAL LOCK v5:
-	// Only configuration files are permitted to write KV.
-	// All user state, security state, logs, tokens, TG binding, risk data
-	// and temporary state are blocked here and must use D1/memory.
-	const KV_WRITE_ALLOWLIST = new Set(['config.json', 'ADD.txt']);
-	if (!KV_WRITE_ALLOWLIST.has(key)) {
-		return;
-	}
-
-	if (!env?.KV || typeof env.KV.put !== 'function') {
-		return;
-	}
-
-	await env.KV.put(key, JSON.stringify(value), options);
+// 已关闭KV写入: 	// 已关闭：安全KV写入JSON统一KV写入入口
 	内存缓存.delete('kv:' + key);
 	if (key.startsWith(安全用户前缀)) 内存缓存清除用户列表();
 }
@@ -9565,7 +9474,7 @@ async function 处理安全管理接口({ request, env, ctx, url, 访问IP, UA }
 				let arr = Array.isArray(raw) ? raw : (typeof raw === 'string' ? raw.split(/[,，\s]+/) : []);
 				tgData.AdminIDs = arr.map((s) => String(s).trim()).filter(Boolean);
 			}
-			// KV disabled: tg.json 安全通知同步写入关闭。
+// 已关闭KV写入: // 已关闭KV写入: 			await env.KV.put('tg.json', JSON.stringify(tgData, null, 2));
 			let notifyEnabled = 当前配置.tgSecurityNotifications?.enabled || false;
 			let syncEnabled = 当前配置.tgSecurityNotifications?.syncEnabled || false;
 			if (typeof body.securityNotifyEnabled === 'boolean' || typeof body.syncEnabled === 'boolean') {
@@ -10006,14 +9915,14 @@ button[disabled]{opacity:.6;cursor:not-allowed}
   <div class="hero">
     <div class="hero-logo">
       <div class="hero-icon"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
-      <span class="hero-name">惊蛰VPN</span>
+      <span class="hero-name">Beacon 灯塔</span>
     </div>
     <h1 class="hero-slogan">连接世界，自由无界</h1>
-    <p class="hero-desc">本服务节点由惊蛰自费创建，所以为保证持久运行，进行月租制度，承诺稳定、快速、免费。</p>
+    <p class="hero-desc">基于 Cloudflare Workers 构建的高性能公益网络服务，稳定、快速、免费。</p>
     <div class="features">
       <span class="feature-tag"><i class="feature-dot"></i>全球节点覆盖</span>
       <span class="feature-tag"><i class="feature-dot"></i>多协议支持</span>
-      <span class="feature-tag"><i class="feature-dot"></i>月租仅需10元</span>
+      <span class="feature-tag"><i class="feature-dot"></i>免费使用</span>
     </div>
   </div>
 
@@ -10032,14 +9941,12 @@ button[disabled]{opacity:.6;cursor:not-allowed}
     <div id="rules-panel" class="rules-panel">
       <div class="rules-title"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>使用须知</div>
       <ul class="rules-list">
-	    <li>本服务节点为VPS服务器搭建，每日分配流量，请及时更新！！！</li>
-        <li>本服务为收费私有性质，仅供个人学习、研究使用</li>
+	    <li>本服务节点为固定节点不需要更新也不推荐更新！！！</li>
+        <li>本服务为公益性质，仅供个人学习、研究使用</li>
         <li>请勿用于任何商业用途或非法活动</li>
         <li>禁止分享、转卖账号或订阅链接给他人</li>
         <li>请合理使用资源，避免频繁请求造成服务不稳定</li>
         <li>管理员保留随时封禁违规账号的权利</li>
-		<li>请勿将本网站及软件发布在公共网络平台上<li>
-		<li>惊蛰VPN搭建的目的是为了让我的朋友用上最实惠的VPN，后续会持续升级，有问题或需求请找作者寻求帮助<li>
       </ul>
       <div class="rules-limit">
         <div class="rules-limit-title">⚠️ 使用限制与安全策略</div>
@@ -10101,7 +10008,7 @@ button[disabled]{opacity:.6;cursor:not-allowed}
     </div>
   </section>
 
-  <footer class="footer">© 2026 惊蛰VPN 极致服务 · 为有可用节点而建</footer>
+  <footer class="footer">© 2025 Beacon 灯塔 公益服务 · 为有可用节点而建</footer>
 </div>
 <script>
 const AuthForm = {
@@ -10353,7 +10260,7 @@ function openSubCopyMask(value, originButton) {
       '<div class="sub-copy-icon">⚡</div>' +
       '<div class="sub-copy-title" id="sub-copy-title">复制前请先修改测延迟链接</div>' +
       '<div class="sub-copy-body">' +
-        '<p>多数代理软件默认用 CF 链接测延迟，会导致测延迟全部显示为超时（红），但实际并不影响代理使用。</p>' +
+        '<p>本订阅部署在 Cloudflare 上，而 CF Workers 默认<strong style="color:#fbbf24">不允许访问自身所托管的网络</strong>。多数代理软件默认用 CF 链接测延迟，会导致测延迟全部显示为超时（红），但实际并不影响代理使用。</p>' +
         '<p>请在代理软件的<strong style="color:#93c5fd">测延迟 URL / 健康检查地址</strong>处改为下方链接：</p>' +
         '<div class="sub-copy-code"><span class="tag">测延迟</span><span class="sub-copy-url">' + LATENCY_TEST_URL + '</span><button type="button" class="sub-copy-url-btn" id="sub-copy-url-btn">📋 复制</button></div>' +
         '<p class="sub-copy-note">修改完成后再复制订阅地址导入。请阅读 <strong style="color:#f8fafc">' + LATENCY_READ_SECONDS + '</strong> 秒后方可继续复制。</p>' +
