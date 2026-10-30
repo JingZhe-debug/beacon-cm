@@ -10006,14 +10006,14 @@ button[disabled]{opacity:.6;cursor:not-allowed}
   <div class="hero">
     <div class="hero-logo">
       <div class="hero-icon"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
-      <span class="hero-name">Beacon 灯塔</span>
+      <span class="hero-name">惊蛰VPN</span>
     </div>
     <h1 class="hero-slogan">连接世界，自由无界</h1>
-    <p class="hero-desc">基于 Cloudflare Workers 构建的高性能公益网络服务，稳定、快速、免费。</p>
+    <p class="hero-desc">本服务节点由惊蛰自费创建，所以为保证持久运行，进行月租制度，承诺稳定、快速、免费。</p>
     <div class="features">
       <span class="feature-tag"><i class="feature-dot"></i>全球节点覆盖</span>
       <span class="feature-tag"><i class="feature-dot"></i>多协议支持</span>
-      <span class="feature-tag"><i class="feature-dot"></i>免费使用</span>
+      <span class="feature-tag"><i class="feature-dot"></i>月租仅需10元</span>
     </div>
   </div>
 
@@ -10032,12 +10032,14 @@ button[disabled]{opacity:.6;cursor:not-allowed}
     <div id="rules-panel" class="rules-panel">
       <div class="rules-title"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>使用须知</div>
       <ul class="rules-list">
-	    <li>本服务节点为固定节点不需要更新也不推荐更新！！！</li>
-        <li>本服务为公益性质，仅供个人学习、研究使用</li>
+	    <li>本服务节点为VPS服务器搭建，每日分配流量，请及时更新！！！</li>
+        <li>本服务为收费私有性质，仅供个人学习、研究使用</li>
         <li>请勿用于任何商业用途或非法活动</li>
         <li>禁止分享、转卖账号或订阅链接给他人</li>
         <li>请合理使用资源，避免频繁请求造成服务不稳定</li>
         <li>管理员保留随时封禁违规账号的权利</li>
+		<li>请勿将本网站及软件发布在公共网络平台上<li>
+		<li>惊蛰VPN搭建的目的是为了让我的朋友用上最实惠的VPN，后续会持续升级，有问题或需求请找作者寻求帮助<li>
       </ul>
       <div class="rules-limit">
         <div class="rules-limit-title">⚠️ 使用限制与安全策略</div>
@@ -10099,7 +10101,7 @@ button[disabled]{opacity:.6;cursor:not-allowed}
     </div>
   </section>
 
-  <footer class="footer">© 2025 Beacon 灯塔 公益服务 · 为有可用节点而建</footer>
+  <footer class="footer">© 2026 惊蛰VPN 极致服务 · 为有可用节点而建</footer>
 </div>
 <script>
 const AuthForm = {
@@ -10351,7 +10353,7 @@ function openSubCopyMask(value, originButton) {
       '<div class="sub-copy-icon">⚡</div>' +
       '<div class="sub-copy-title" id="sub-copy-title">复制前请先修改测延迟链接</div>' +
       '<div class="sub-copy-body">' +
-        '<p>本订阅部署在 Cloudflare 上，而 CF Workers 默认<strong style="color:#fbbf24">不允许访问自身所托管的网络</strong>。多数代理软件默认用 CF 链接测延迟，会导致测延迟全部显示为超时（红），但实际并不影响代理使用。</p>' +
+        '<p>多数代理软件默认用 CF 链接测延迟，会导致测延迟全部显示为超时（红），但实际并不影响代理使用。</p>' +
         '<p>请在代理软件的<strong style="color:#93c5fd">测延迟 URL / 健康检查地址</strong>处改为下方链接：</p>' +
         '<div class="sub-copy-code"><span class="tag">测延迟</span><span class="sub-copy-url">' + LATENCY_TEST_URL + '</span><button type="button" class="sub-copy-url-btn" id="sub-copy-url-btn">📋 复制</button></div>' +
         '<p class="sub-copy-note">修改完成后再复制订阅地址导入。请阅读 <strong style="color:#f8fafc">' + LATENCY_READ_SECONDS + '</strong> 秒后方可继续复制。</p>' +
